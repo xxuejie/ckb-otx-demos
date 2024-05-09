@@ -25,6 +25,12 @@ use molecule::prelude::Entity;
 pub fn program_entry() -> i8 {
     let current_script = high_level::load_script().expect("loading script");
     if current_script.args().len() == 96 {
+        if let Ok(Some(t)) = high_level::load_cell_type(0, Source::GroupInput) {
+            assert_ne!(current_script, t);
+        }
+        if let Ok(Some(t)) = high_level::load_cell_type(0, Source::GroupOutput) {
+            assert_ne!(current_script, t);
+        }
         // Current script is used as the lock script of an order cell, there are 2 ways
         // to unlock it:
         // 1. When the order cell is processed by the dex as a normal order;
@@ -172,8 +178,7 @@ pub fn program_entry() -> i8 {
         tx,
         current_script,
         input_entity_header,
-        current_input_index: input_entity_index + 1,
-        current_output_index: output_entity_index + 1,
+        output_entity_end: output_entity_index + 1,
         otx_input_start: usize::max_value(),
         otx_input_end: 0,
         otx_output_start: usize::max_value(),
@@ -227,25 +232,41 @@ pub fn program_entry() -> i8 {
         {
             let action = schema::Dex1Action::from_slice(&action.data().raw_data())
                 .expect("parsing action data");
+            let mut order_iter = action.orders().into_iter();
+            let mut i = 0;
+            loop {
+                if i >= context.otx_input_start && i < context.otx_input_end {
+                    i += 1;
+                    continue;
+                }
+                if i == input_entity_index {
+                    i += 1;
+                    continue;
+                }
 
-            for order in action.orders() {
-                let order_hash = hash_order(&order);
+                let lock = match high_level::load_cell_lock(i, Source::Input) {
+                    Ok(l) => l,
+                    Err(SysError::IndexOutOfBound) => break,
+                    Err(e) => panic!("Error loading input lock: {:?}", e),
+                };
+                if lock.code_hash() == context.current_script.code_hash()
+                    && lock.hash_type() == context.current_script.hash_type()
+                {
+                    assert_eq!(lock.args().len(), 96);
+                    assert_eq!(
+                        context.current_script.args().raw_data(),
+                        lock.args().raw_data().slice(0..32),
+                    );
 
-                let next_lock =
-                    high_level::load_cell_lock(context.current_input_index, Source::Input)
-                        .expect("load freestanding cell lock");
-                assert_eq!(context.current_script.code_hash(), next_lock.code_hash(),);
-                assert_eq!(context.current_script.hash_type(), next_lock.hash_type(),);
-                assert_eq!(context.current_script.args().len(), 96,);
-                assert_eq!(
-                    context.current_script.args().raw_data(),
-                    next_lock.args().raw_data().slice(0..32),
-                );
-                assert_eq!(&order_hash, &*next_lock.args().raw_data().slice(64..96));
-
-                context.process(order);
-                context.current_input_index += 1;
+                    let order = order_iter.next().unwrap();
+                    let order_hash = hash_order(&order);
+                    assert_eq!(&order_hash, &*lock.args().raw_data().slice(64..96));
+                    context.process(order);
+                }
+                i += 1;
             }
+
+            assert!(order_iter.next().is_none());
         }
     }
 
@@ -253,67 +274,14 @@ pub fn program_entry() -> i8 {
     if context.otx_input_start < context.otx_input_end {
         assert!(
             input_entity_index >= context.otx_input_end
-                || context.current_input_index <= context.otx_input_start
+                || input_entity_index < context.otx_input_start
         );
     }
     if context.otx_output_start < context.otx_output_end {
         assert!(
             output_entity_index >= context.otx_output_end
-                || context.current_output_index <= context.otx_output_start
+                || context.output_entity_end <= context.otx_output_start
         );
-    }
-
-    // Apart from the above touched cells, no other cells in current transaction
-    // should use dex1 script anywhere
-    {
-        let mut i = 0;
-        loop {
-            if i >= context.otx_input_start && i <= context.otx_input_end {
-                i += 1;
-                continue;
-            }
-            if i >= input_entity_index && i < context.current_input_index {
-                i += 1;
-                continue;
-            }
-
-            let lock = match high_level::load_cell_lock(i, Source::Input) {
-                Ok(l) => l,
-                Err(SysError::IndexOutOfBound) => break,
-                Err(e) => panic!("Error reading input lock: {:?}", e),
-            };
-            assert!(
-                !(lock.code_hash() == context.current_script.code_hash()
-                    && lock.hash_type() == context.current_script.hash_type())
-            );
-            if let Some(t) = high_level::load_cell_type(i, Source::Input).expect("load type") {
-                assert!(
-                    !(t.code_hash() == context.current_script.code_hash()
-                        && t.hash_type() == context.current_script.hash_type())
-                );
-            }
-            i += 1;
-        }
-
-        for (i, cell_output) in context.tx.raw().outputs().into_iter().enumerate() {
-            if i >= context.otx_input_start && i <= context.otx_input_end {
-                continue;
-            }
-            if i >= input_entity_index && i < context.current_input_index {
-                continue;
-            }
-
-            assert!(
-                !(cell_output.lock().code_hash() == context.current_script.code_hash()
-                    && cell_output.lock().hash_type() == context.current_script.hash_type())
-            );
-            if let Some(t) = cell_output.type_().to_opt() {
-                assert!(
-                    !(t.code_hash() == context.current_script.code_hash()
-                        && t.hash_type() == context.current_script.hash_type())
-                );
-            }
-        }
     }
 
     0
@@ -324,8 +292,7 @@ struct Context {
     current_script: blockchain::Script,
     input_entity_header: blockchain::Header,
 
-    current_input_index: usize,
-    current_output_index: usize,
+    output_entity_end: usize,
     otx_input_start: usize,
     otx_input_end: usize,
     otx_output_start: usize,
@@ -364,72 +331,72 @@ impl Context {
         let freestanding_args = self.freestanding_script_args(&order_hash, &order.recipient());
         // Regardless of locks, next cell must use the asked UDT token type
         assert_eq!(
-            high_level::load_cell_type_hash(self.current_output_index, Source::Output)
+            high_level::load_cell_type_hash(self.output_entity_end, Source::Output)
                 .expect("load pay cell type hash")
                 .unwrap(),
             *order.ask_token().raw_data()
         );
-        let next_lock = high_level::load_cell_lock(self.current_output_index, Source::Output)
+        let next_lock = high_level::load_cell_lock(self.output_entity_end, Source::Output)
             .expect("load pay cell lock");
         if next_lock.code_hash() == self.current_script.code_hash()
             && next_lock.hash_type() == self.current_script.hash_type()
             && *next_lock.args().raw_data() == freestanding_args
         {
             // Freestanding cell available
-            let freestanding_amount = self.output_cell_udt_amount(self.current_output_index);
+            let freestanding_amount = self.output_cell_udt_amount(self.output_entity_end);
             if freestanding_amount < bid_amount {
                 // Partial filled
-                let freestanding_ckbytes = self.output_cell_ckbytes(self.current_output_index);
+                let freestanding_ckbytes = self.output_cell_ckbytes(self.output_entity_end);
                 assert_eq!(
-                    high_level::load_cell_lock_hash(self.current_output_index + 1, Source::Output)
+                    high_level::load_cell_lock_hash(self.output_entity_end + 1, Source::Output)
                         .expect("load pay cell lock hash"),
                     *order.recipient().raw_data()
                 );
                 assert_eq!(
-                    high_level::load_cell_type_hash(self.current_output_index + 1, Source::Output)
+                    high_level::load_cell_type_hash(self.output_entity_end + 1, Source::Output)
                         .expect("load pay cell type hash")
                         .unwrap(),
                     *order.ask_token().raw_data()
                 );
                 let actual_bid_amount = bid_amount - freestanding_amount;
-                let actual_paid_amount = self.output_cell_udt_amount(self.current_output_index + 1);
+                let actual_paid_amount = self.output_cell_udt_amount(self.output_entity_end + 1);
                 // For simplicity I picked this formula, but you might want to tweak it.
                 let required_paid_amount = (U256::from(actual_bid_amount) * U256::from(ask_amount)
                     / U256::from(bid_amount))
                 .as_u128();
                 assert!(actual_paid_amount >= required_paid_amount);
-                let payback_ckbytes = self.output_cell_ckbytes(self.current_output_index + 1);
+                let payback_ckbytes = self.output_cell_ckbytes(self.output_entity_end + 1);
                 assert!(
                     freestanding_ckbytes
                         .checked_add(payback_ckbytes)
                         .expect("overflow")
                         >= order.claimed_ckbytes().unpack()
                 );
-                self.current_output_index += 2;
+                self.output_entity_end += 2;
             } else {
                 // Fully filled freestanding cell
                 // UDT amount kept in the freestanding cell has been asserted above.
                 // All we need to do here is CKBytes comparison
                 assert!(
-                    self.output_cell_ckbytes(self.current_output_index)
+                    self.output_cell_ckbytes(self.output_entity_end)
                         >= order.claimed_ckbytes().unpack()
                 );
-                self.current_output_index += 1;
+                self.output_entity_end += 1;
             }
         } else {
             // Properly filled cell
             assert_eq!(
-                high_level::load_cell_lock_hash(self.current_output_index, Source::Output)
+                high_level::load_cell_lock_hash(self.output_entity_end, Source::Output)
                     .expect("load pay cell lock hash"),
                 *order.recipient().raw_data()
             );
-            let actual_amount = self.output_cell_udt_amount(self.current_output_index);
+            let actual_amount = self.output_cell_udt_amount(self.output_entity_end);
             assert_eq!(actual_amount, ask_amount);
             assert!(
-                self.output_cell_ckbytes(self.current_output_index)
+                self.output_cell_ckbytes(self.output_entity_end)
                     >= order.claimed_ckbytes().unpack()
             );
-            self.current_output_index += 1;
+            self.output_entity_end += 1;
         }
     }
 
@@ -438,21 +405,21 @@ impl Context {
         // partial filling of market order.
         // TODO: anything we can do to mitigate market order censorship?
         assert_eq!(
-            high_level::load_cell_type_hash(self.current_output_index, Source::Output)
+            high_level::load_cell_type_hash(self.output_entity_end, Source::Output)
                 .expect("load pay cell type hash")
                 .unwrap(),
             *order.ask_token().raw_data()
         );
         assert_eq!(
-            high_level::load_cell_lock_hash(self.current_output_index, Source::Output)
+            high_level::load_cell_lock_hash(self.output_entity_end, Source::Output)
                 .expect("load pay cell lock hash"),
             *order.recipient().raw_data()
         );
         assert!(
-            self.output_cell_ckbytes(self.current_output_index) >= order.claimed_ckbytes().unpack()
+            self.output_cell_ckbytes(self.output_entity_end) >= order.claimed_ckbytes().unpack()
         );
-        let actual_amount = self.output_cell_udt_amount(self.current_output_index);
-        self.current_output_index += 1;
+        let actual_amount = self.output_cell_udt_amount(self.output_entity_end);
+        self.output_entity_end += 1;
         actual_amount
     }
 
