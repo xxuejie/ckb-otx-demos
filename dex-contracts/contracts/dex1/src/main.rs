@@ -263,6 +263,59 @@ pub fn program_entry() -> i8 {
         );
     }
 
+    // Apart from the above touched cells, no other cells in current transaction
+    // should use dex1 script anywhere
+    {
+        let mut i = 0;
+        loop {
+            if i >= context.otx_input_start && i <= context.otx_input_end {
+                i += 1;
+                continue;
+            }
+            if i >= input_entity_index && i < context.current_input_index {
+                i += 1;
+                continue;
+            }
+
+            let lock = match high_level::load_cell_lock(i, Source::Input) {
+                Ok(l) => l,
+                Err(SysError::IndexOutOfBound) => break,
+                Err(e) => panic!("Error reading input lock: {:?}", e),
+            };
+            assert!(
+                !(lock.code_hash() == context.current_script.code_hash()
+                    && lock.hash_type() == context.current_script.hash_type())
+            );
+            if let Some(t) = high_level::load_cell_type(i, Source::Input).expect("load type") {
+                assert!(
+                    !(t.code_hash() == context.current_script.code_hash()
+                        && t.hash_type() == context.current_script.hash_type())
+                );
+            }
+            i += 1;
+        }
+
+        for (i, cell_output) in context.tx.raw().outputs().into_iter().enumerate() {
+            if i >= context.otx_input_start && i <= context.otx_input_end {
+                continue;
+            }
+            if i >= input_entity_index && i < context.current_input_index {
+                continue;
+            }
+
+            assert!(
+                !(cell_output.lock().code_hash() == context.current_script.code_hash()
+                    && cell_output.lock().hash_type() == context.current_script.hash_type())
+            );
+            if let Some(t) = cell_output.type_().to_opt() {
+                assert!(
+                    !(t.code_hash() == context.current_script.code_hash()
+                        && t.hash_type() == context.current_script.hash_type())
+                );
+            }
+        }
+    }
+
     0
 }
 
