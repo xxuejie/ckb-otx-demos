@@ -1,7 +1,3 @@
 # dex1
 
-TODO: Write this readme
-
-*This contract was bootstrapped with [ckb-script-templates].*
-
-[ckb-script-templates]: https://github.com/cryptape/ckb-script-templates
+An experimental contract implementation for [the orderbook dex design](https://talk.nervos.org/t/an-orderbook-dex-design-using-cobuild-otx/8089)
