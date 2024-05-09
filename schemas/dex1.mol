@@ -1,0 +1,40 @@
+import blockchain;
+
+table LimitOrder {
+    bid_token: Byte32,
+	  bid_amount: Uint128,
+    ask_token: Byte32,
+    ask_amount: Uint128,
+    recipient: Byte32,
+    claimed_ckbytes: Uint64,
+}
+
+table LimitOrderWithDeadline {
+    order: LimitOrder,
+    deadline: Uint64,
+}
+
+table MarketOrder {
+    bid_token: Byte32,
+    bid_amount: Uint128,
+    ask_token: Byte32,
+    recipient: Byte32,
+    claimed_ckbytes: Uint64,
+}
+
+table MarketOrderWithMinimumAsk {
+    order: MarketOrder,
+    minimum_ask: Uint128,
+}
+
+union Order {
+		LimitOrder,
+		LimitOrderWithDeadline,
+		MarketOrder,
+		MarketOrderWithMinimumAsk,
+}
+vector Orders <Order>;
+
+table Dex1Action {
+    orders: Orders,
+}
