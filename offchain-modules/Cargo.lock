@@ -832,6 +832,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dex1-helper"
+version = "0.1.0"
+dependencies = [
+ "ckb-hash",
+ "ckb-jsonrpc-types",
+ "ckb-sdk",
+ "ckb-types",
+ "clap",
+ "flexi_logger",
+ "log",
+ "secp256k1",
+]
+
+[[package]]
 name = "dex1-processor"
 version = "0.1.0"
 dependencies = [
