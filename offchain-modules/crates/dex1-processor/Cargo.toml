@@ -1,0 +1,24 @@
+[package]
+name = "dex1-processor"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dex1-assembler = { path = "../dex1-assembler" }
+otx-traits = { path = "../otx-traits" }
+
+anyhow = "1.0.86"
+clap = { version = "4.5.4", features = ["cargo"] }
+ckb-sdk = "3.2.0"
+ckb-jsonrpc-types = "0.116.1"
+ckb-types = "0.116.1"
+flexi_logger = "0.28.1"
+jsonrpc-core = "18.0"
+jsonrpc-core-client = "18.0"
+jsonrpc-derive = "18.0"
+jsonrpc-http-server = "18.0.0"
+log = "0.4.21"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.5"

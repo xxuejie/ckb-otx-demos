@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+
+members = [
+  "crates/dex1-assembler",
+  "crates/dex1-processor"
+]

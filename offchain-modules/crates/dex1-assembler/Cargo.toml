@@ -1,0 +1,17 @@
+[package]
+name = "dex1-assembler"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+otx-traits = { path = "../otx-traits" }
+
+anyhow = "1.0.86"
+ckb-jsonrpc-types = "0.116.1"
+ckb-sdk = "3.2.0"
+ckb-types = "0.116.1"
+molecule = "0.7.5"
+num-rational = "0.4.2"
+serde = { version = "1.0", features = ["derive"] }
