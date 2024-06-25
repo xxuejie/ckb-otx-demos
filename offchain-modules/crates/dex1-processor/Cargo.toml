@@ -10,15 +10,22 @@ dex1-assembler = { path = "../dex1-assembler" }
 otx-traits = { path = "../otx-traits" }
 
 anyhow = "1.0.86"
+chrono = "0.4.38"
 clap = { version = "4.5.4", features = ["cargo"] }
-ckb-sdk = "3.2.0"
 ckb-jsonrpc-types = "0.116.1"
+ckb-sdk = "3.2.0"
 ckb-types = "0.116.1"
 flexi_logger = "0.28.1"
+hex = "0.4.3"
 jsonrpc-core = "18.0"
 jsonrpc-core-client = "18.0"
 jsonrpc-derive = "18.0"
 jsonrpc-http-server = "18.0.0"
 log = "0.4.21"
-serde = { version = "1.0", features = ["derive"] }
+regex = "1.10.5"
+serde_json = "1.0"
 toml = "0.5"
+
+[dev-dependencies]
+ckb-script = "0.116.1"
+rand = "0.8.5"

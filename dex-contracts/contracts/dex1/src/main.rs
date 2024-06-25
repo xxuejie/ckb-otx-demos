@@ -15,7 +15,7 @@ pub use ckb_gen_types::packed as blockchain;
 #[allow(dead_code)]
 mod schema;
 
-use ckb_gen_types::prelude::Unpack;
+use ckb_gen_types::prelude::*;
 use ckb_gen_types_cobuild::prelude::Unpack as CobuildUnpack;
 use ckb_std::{ckb_constants::Source, error::SysError, high_level};
 use ckb_transaction_cobuild::{fetch_message, parse_otx_structure, Error as CobuildError};
@@ -102,7 +102,7 @@ pub fn program_entry() -> i8 {
                     if t == current_script {
                         assert!(
                             found_index.is_none(),
-                            "More than one input cell uses AMM entity script!"
+                            "More than one input cell uses Dex1 entity script!"
                         );
                         found_index = Some(i);
                     }
@@ -115,7 +115,8 @@ pub fn program_entry() -> i8 {
         }
         found_index
     };
-    // For simplicity, we disallow termination
+    // For simplicity, we disallow destroying of dex1 cell here. But this could of course
+    // be changed.
     assert!(
         tx.raw()
             .outputs()
@@ -127,7 +128,7 @@ pub fn program_entry() -> i8 {
                 .unwrap_or(false))
             .count()
             == 1,
-        "Only one output cell uses AMM entity type script!"
+        "Only one output cell uses Dex1 entity type script!"
     );
     let output_entity_index = tx
         .raw()
@@ -164,6 +165,7 @@ pub fn program_entry() -> i8 {
         blake2b.finalize(&mut ret);
 
         assert_eq!(ret, *current_script.args().raw_data().slice(0..32));
+        return 0;
     }
     let input_entity_index = input_entity_index.unwrap();
     // No one can change the lock of entity cell
@@ -301,9 +303,8 @@ struct Context {
 
 impl Context {
     fn process(&mut self, order: schema::Order) {
-        let order_hash = hash_order(&order);
         match order.to_enum() {
-            schema::OrderUnion::LimitOrder(o) => self.validate_limit_order(o, order_hash),
+            schema::OrderUnion::LimitOrder(_) => self.validate_limit_order(order),
             schema::OrderUnion::LimitOrderWithDeadline(o) => {
                 // TODO: for now, we treat deadline as an absolute block number,
                 // but it is always possible to expand this to support more variations,
@@ -311,7 +312,7 @@ impl Context {
                 let deadline_block: u64 = o.deadline().unpack();
                 let input_block: u64 = self.input_entity_header.raw().number().unpack();
                 assert!(input_block < deadline_block);
-                self.validate_limit_order(o.order(), order_hash);
+                self.validate_limit_order(order);
             }
             schema::OrderUnion::MarketOrder(o) => {
                 self.validate_market_order(o);
@@ -324,29 +325,42 @@ impl Context {
         }
     }
 
-    fn validate_limit_order(&mut self, order: schema::LimitOrder, order_hash: [u8; 32]) {
+    fn validate_limit_order(&mut self, full_order: schema::Order) {
+        let order = match full_order.to_enum() {
+            schema::OrderUnion::LimitOrder(o) => o,
+            schema::OrderUnion::LimitOrderWithDeadline(o) => o.order(),
+            _ => unreachable!(),
+        };
+
         let bid_amount: u128 = order.bid_amount().unpack();
         let ask_amount: u128 = order.ask_amount().unpack();
 
-        let freestanding_args = self.freestanding_script_args(&order_hash, &order.recipient());
-        // Regardless of locks, next cell must use the asked UDT token type
-        assert_eq!(
-            high_level::load_cell_type_hash(self.output_entity_end, Source::Output)
-                .expect("load pay cell type hash")
-                .unwrap(),
-            *order.ask_token().raw_data()
-        );
+        // Depending on the actual fulfillment of order, there might be 3 cases:
+        // * The order is fully filled, an output cell using recipient lock,
+        // ask token script as type script, and the correct amount will be added
+        // * The order is partially filled, there will be 2 output cells created.
+        // The first cell is named as freestanding cell, it uses dex1 script with
+        // 96 bytes of args as lock, bid token script as type script, and the returned
+        // bid UDT amount; the second cell uses recipient lock and ask token type
+        // script. The freestanding cell here is actually another limit order that
+        // can be processed later.
+        // * The order is not filled at all, only one freestanding cell will be created
+        // here.
         let next_lock = high_level::load_cell_lock(self.output_entity_end, Source::Output)
             .expect("load pay cell lock");
         if next_lock.code_hash() == self.current_script.code_hash()
             && next_lock.hash_type() == self.current_script.hash_type()
-            && *next_lock.args().raw_data() == freestanding_args
         {
+            assert_eq!(
+                high_level::load_cell_type_hash(self.output_entity_end, Source::Output)
+                    .expect("load pay cell type hash")
+                    .unwrap(),
+                *order.bid_token().raw_data()
+            );
             // Freestanding cell available
             let freestanding_amount = self.output_cell_udt_amount(self.output_entity_end);
             if freestanding_amount < bid_amount {
-                // Partial filled
-                let freestanding_ckbytes = self.output_cell_ckbytes(self.output_entity_end);
+                // Partial filled, there must be an additional cell containing filled tokens
                 assert_eq!(
                     high_level::load_cell_lock_hash(self.output_entity_end + 1, Source::Output)
                         .expect("load pay cell lock hash"),
@@ -358,13 +372,16 @@ impl Context {
                         .unwrap(),
                     *order.ask_token().raw_data()
                 );
+                // Validate price first
                 let actual_bid_amount = bid_amount - freestanding_amount;
                 let actual_paid_amount = self.output_cell_udt_amount(self.output_entity_end + 1);
                 // For simplicity I picked this formula, but you might want to tweak it.
-                let required_paid_amount = (U256::from(actual_bid_amount) * U256::from(ask_amount)
-                    / U256::from(bid_amount))
-                .as_u128();
-                assert!(actual_paid_amount >= required_paid_amount);
+                assert!(
+                    U256::from(actual_paid_amount) * U256::from(bid_amount)
+                        >= U256::from(ask_amount) * U256::from(actual_bid_amount),
+                );
+                // Now that the price is legit, we will validate claimed CKBytes
+                let freestanding_ckbytes = self.output_cell_ckbytes(self.output_entity_end);
                 let payback_ckbytes = self.output_cell_ckbytes(self.output_entity_end + 1);
                 assert!(
                     freestanding_ckbytes
@@ -372,6 +389,16 @@ impl Context {
                         .expect("overflow")
                         >= order.claimed_ckbytes().unpack()
                 );
+                // Partial filled freestanding cells have a new order
+                let new_order = carve_limit_order(
+                    &full_order,
+                    freestanding_amount,
+                    ask_amount - actual_paid_amount,
+                    freestanding_ckbytes,
+                );
+                let freestanding_args =
+                    self.freestanding_script_args(&hash_order(&new_order), &order.recipient());
+                assert_eq!(*next_lock.args().raw_data(), freestanding_args);
                 self.output_entity_end += 2;
             } else {
                 // Fully filled freestanding cell
@@ -381,17 +408,26 @@ impl Context {
                     self.output_cell_ckbytes(self.output_entity_end)
                         >= order.claimed_ckbytes().unpack()
                 );
+                let freestanding_args =
+                    self.freestanding_script_args(&hash_order(&full_order), &order.recipient());
+                assert_eq!(*next_lock.args().raw_data(), freestanding_args);
                 self.output_entity_end += 1;
             }
         } else {
             // Properly filled cell
+            assert_eq!(
+                high_level::load_cell_type_hash(self.output_entity_end, Source::Output)
+                    .expect("load pay cell type hash")
+                    .unwrap(),
+                *order.ask_token().raw_data()
+            );
             assert_eq!(
                 high_level::load_cell_lock_hash(self.output_entity_end, Source::Output)
                     .expect("load pay cell lock hash"),
                 *order.recipient().raw_data()
             );
             let actual_amount = self.output_cell_udt_amount(self.output_entity_end);
-            assert_eq!(actual_amount, ask_amount);
+            assert!(actual_amount >= ask_amount);
             assert!(
                 self.output_cell_ckbytes(self.output_entity_end)
                     >= order.claimed_ckbytes().unpack()
@@ -461,4 +497,46 @@ fn hash_order(order: &schema::Order) -> [u8; 32] {
     let mut hash = [0u8; 32];
     blake.finalize(&mut hash);
     hash
+}
+
+// Carve an existing limit order to update bid & ask amounts.
+// This provides a minimal solution without introduing the whole builder
+// implementation.
+fn carve_limit_order(
+    order: &schema::Order,
+    new_bid_amount: u128,
+    new_ask_amount: u128,
+    new_claimed_ckbytes: u64,
+) -> schema::Order {
+    let (bid_offset, ask_offset, ckb_offset) = {
+        let reader = order.as_reader();
+        let (order_reader, base_offset) = match reader.to_enum() {
+            schema::OrderUnionReader::LimitOrder(o) => {
+                let offset = o.as_slice().as_ptr() as usize - reader.as_slice().as_ptr() as usize;
+                (o, offset)
+            }
+            schema::OrderUnionReader::LimitOrderWithDeadline(o) => {
+                let offset =
+                    o.order().as_slice().as_ptr() as usize - reader.as_slice().as_ptr() as usize;
+                (o.order(), offset)
+            }
+            _ => unreachable!(),
+        };
+        (
+            order_reader.bid_amount().as_slice().as_ptr() as usize
+                - order_reader.as_slice().as_ptr() as usize
+                + base_offset,
+            order_reader.ask_amount().as_slice().as_ptr() as usize
+                - order_reader.as_slice().as_ptr() as usize
+                + base_offset,
+            order_reader.claimed_ckbytes().as_slice().as_ptr() as usize
+                - order_reader.as_slice().as_ptr() as usize
+                + base_offset,
+        )
+    };
+    let mut data = order.as_slice().to_vec();
+    data[bid_offset..bid_offset + 16].copy_from_slice(&new_bid_amount.to_le_bytes());
+    data[ask_offset..ask_offset + 16].copy_from_slice(&new_ask_amount.to_le_bytes());
+    data[ckb_offset..ckb_offset + 8].copy_from_slice(&new_claimed_ckbytes.to_le_bytes());
+    schema::Order::from_slice(&data).expect("creating new order")
 }

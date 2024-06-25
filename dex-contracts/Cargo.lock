@@ -29,19 +29,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "amm"
-version = "0.1.0"
-dependencies = [
- "blake2b-ref",
- "ckb-gen-types 0.111.0",
- "ckb-gen-types 0.112.1",
- "ckb-std 0.15.3",
- "ckb-transaction-cobuild",
- "ethnum",
- "molecule",
-]
-
-[[package]]
 name = "anyhow"
 version = "1.0.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"

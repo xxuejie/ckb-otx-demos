@@ -1,0 +1,30 @@
+otx_rpc = "http://127.0.0.1:9999"
+ckb_rpc = "http://127.0.0.1:8114"
+
+dex1_trading_pair_hashes = []
+
+test_udts = []
+
+[omnilock]
+
+# Deployment details for omnilock/build/omni_lock
+
+
+
+[udt]
+
+# Deployment details for ckb-production-scripts/build/xudt_rce
+
+
+
+[dex1]
+
+# Deployment details for dex1-demos/dex-contracts/build/release/dex1
+
+
+
+[always_success]
+
+# Always success deployment detail
+
+
