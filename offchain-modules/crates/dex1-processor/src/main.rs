@@ -71,14 +71,29 @@ impl<A: Assembler> SingleInMemorySource<A> {
             .collect()
     }
 
+    // Count the number of otxs
+    pub fn len(&self) -> usize {
+        self.data
+            .values()
+            .map(|otxs| otxs.values().map(|values| values.len()))
+            .flatten()
+            .fold(0, |acc, l| acc + l)
+    }
+
     // Given a set of already-spent outpoints, this method purges all otxs
     // that also consume such outpoints
     pub fn purge_otxs(&mut self, outpoints: &HashSet<packed::OutPoint>) {
+        let before = self.len();
         for otxs in self.data.values_mut() {
             for values in otxs.values_mut() {
                 values.retain(|value| !value.spent(outpoints));
             }
             otxs.retain(|_, values| !values.is_empty());
+        }
+        let after = self.len();
+        assert!(before >= after);
+        if before > after {
+            log::info!("Purged {} otxs due to spent outpoints", before - after);
         }
     }
 }
@@ -312,7 +327,18 @@ fn main() {
                         .into_iter()
                         .map(|input| input.previous_output())
                         .collect();
+                    // Purge otxs that have already spent outpoints
                     source.purge_otxs(&out_points);
+                    // Purge pending txs that have already spent outpoints
+                    if let Some(i) =
+                        source.pending_txs.iter().position(|(pending_tx, _)| {
+                            pending_tx.raw().inputs().into_iter().any(|cell_input| {
+                                out_points.contains(&cell_input.previous_output())
+                            })
+                        })
+                    {
+                        source.pending_txs.drain(i..);
+                    }
                 }
                 Some(false) => {
                     // In case an inflight transaction is present but not yet
@@ -442,10 +468,23 @@ fn main() {
 
             // Actual processing of requests from RPC
             log::debug!("Processing otxs from RPC!");
-            let (new_otxs, cancelling_out_points): (Vec<_>, HashSet<_>) = {
+            let (new_otxs, mut cancelling_out_points): (Vec<_>, HashSet<_>) = {
                 let mut pair = buffered_data.lock().expect("lock");
                 (pair.0.drain(..).collect(), pair.1.drain(..).collect())
             };
+            // When new otx contains outpoints used by old otxs, we should purge old
+            // otxs first.
+            cancelling_out_points.extend(
+                new_otxs
+                    .iter()
+                    .map(|otx| {
+                        otx.raw()
+                            .inputs()
+                            .into_iter()
+                            .map(|input| input.previous_output())
+                    })
+                    .flatten(),
+            );
             source.purge_otxs(&cancelling_out_points);
             for new_otx in new_otxs {
                 let rich_otx = dex1_env.fulfill_otx(new_otx).expect("fulfilling otx");

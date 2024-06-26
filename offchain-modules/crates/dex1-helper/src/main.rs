@@ -881,7 +881,8 @@ fn cancel_otx(top_matches: &ArgMatches) {
         .expect("tx file is required as input!");
 
     let tx_data = std::fs::read(tx_path).expect("read");
-    let tx = packed::Transaction::from_slice(&tx_data).expect("parse tx");
+    let tx: ckbrpc::Transaction = serde_json::from_slice(&tx_data).expect("parse json");
+    let tx: packed::Transaction = tx.into();
 
     let otx_client = OtxRpcClient::new(&config.otx_rpc);
     otx_client
